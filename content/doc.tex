@@ -1,0 +1,305 @@
+\textbf{Multisig: Defeating Drijvers with Bi-Nonce Signing}\\
+koe \texttt{ukoe@protonmail.com}\\
+\today
+
+Drijvers et.\ al in \cite{Drijvers-attack-multisig} discuss an attack on some multisignature schemes. They show how Wagner's generalization of the birthday problem \cite{generalized-birthday-wagner} can allow signature forgeries in sub-exponential time if a multisig group containing a dishonest signer performs many concurrent signing attempts (at least 9 parallel attempts are required for an efficient attack, according to \cite{ROS-attack-multisig}).
+
+The FROST signature scheme \cite{FROST-multisig-scheme} introduced so-called `bi-nonce signing' to efficiently and effectively defeat the Drijvers attack without increasing communication rounds between signers, compared to naive multisig. Previous schemes, such as MuSig \cite{maxwell2018simple-musig}, defeated Drijvers with commit-and-reveal patterns that add an extra round of communication to signing (this approach was recommended in MRL-0009 \cite{MRL-0009-multisig}).
+
+In this technical note, I sketch out an intuition for Schnorr multisig, the Drijvers attack, and the two primary mitigations against Drijvers (bi-nonce signing and commit-and-reveal patterns). I only discuss N-of-N multisignatures, but all/most concepts can be extended to M-of-N thresholded multisig (M $\leq$ N).
+
+This document is for EDUCATIONAL PURPOSES ONLY, and should NEVER EVER be used for a production implementation (refer to the cited materials instead).
+
+
+\subsection*{Plain Schnorr}
+
+Here is a plain Schnorr signature scheme, with one signer (Alice).
+
+\subsubsection*{Signature}
+
+Assume Alice has the private/public key pair \((k_A, K_A)\). To unequivocally sign an arbitrary message $\mathfrak{m}$, she could execute the following steps:
+
+\begin{enumerate}
+	\item Generate random number $\alpha \in_R \mathbb{Z}_l$, and compute $\alpha G$.
+
+	\item Calculate the challenge using a cryptographically secure hash function, \(c = \mathcal{H}(\mathfrak{m},[\alpha G])\).
+
+	\item Define the response $r$ such that $\alpha = r + c*k_A$. In other words, $r = \alpha - c*k_A$.
+	\item Publish the signature $(c, r)$.
+\end{enumerate}
+
+\subsubsection*{Verification}
+
+Any third party who knows the EC domain parameters (specifying which elliptic curve was used), the signature $(c, r)$, the signing method, $\mathfrak{m}$, the hash function, and $K_A$ can verify the signature:
+
+\begin{enumerate}
+	\item Calculate the challenge: \(c' = \mathcal{H}(\mathfrak{m},[r G + c*K_A])\).
+
+	\item If $c = c'$, then the signature passes.
+\end{enumerate}
+
+
+\subsection*{Naive Schnorr multisig}
+
+Here is a naive 2-round multisig Schnorr scheme between N signers (N-of-N). For simplicity, we use plain key aggregation to create the group key (the sum of signer keys). In a real implementation, you would use robust key aggregation (from \cite{maxwell2018simple-musig}), FROST-style key generation (from \cite{FROST-multisig-scheme, MRL-0009-multisig}), or key-share signing (from {\tt SpeedyMuSig} in \cite{multisig-proofs-and-optimizations}).
+
+\subsubsection*{Signature}
+
+Say there are N people who each have a public key in the set $\mathbb{K}^{pre}$, where each person $e \in \{1,...,N\}$ knows the private key $k^{pre}_e$. Their N-of-N group public key, which they will use to sign messages, is $K^{grp} = \sum_e k^{pre}_e G$. Suppose they want to jointly sign a message $\mathfrak{m}$. They could collaborate on a basic Schnorr-like signature like this:
+
+\begin{enumerate}
+    \item \textbf{Round 1}: Each participant $e \in \{1,...,N\}$ does the following.
+    \begin{enumerate}
+        \item picks random nonce $\alpha_e \in_R \mathbb{Z}_l$,
+        \item computes $\alpha_e G$ and sends it to the other participants securely.
+    \end{enumerate}
+
+    \item Each participant computes 
+    \[ \alpha G = \sum_e \alpha_e G \]
+
+    \item \textbf{Round 2}: Each participant $e \in \{1,...,N\}$ does the following.\footnote{Note that a universal requirement of multisig schemes is to never reuse $\alpha_e$ for different challenges $c$.}
+    \begin{enumerate}
+        \item computes the challenge $c = \mathcal{H}_n(\mathfrak{m},[\alpha G])$,
+        \item defines their response component $r_e = \alpha_e - c*k^{pre}_e \pmod l$,
+        \item and sends $r_e$ to the other participants securely.
+    \end{enumerate}
+
+    \item Each participant computes 
+    \[ r = \sum_e r_e\]
+    \item Any participant can publish the signature $\sigma(\mathfrak{m}) = (c, r)$.
+\end{enumerate}
+
+Note that, semantically, a round `ends' when participants have collected all messages produced and sent out by other participants during that round.
+
+\subsubsection*{Verification}
+
+Given $K^{grp}$, $\mathfrak{m}$, and $\sigma(\mathfrak{m}) = (c,r)$:
+\begin{enumerate}
+    \item Compute the challenge $c' = \mathcal{H}_n(\mathfrak{m},[r G + c*K^{grp}])$.
+
+    \item If $c = c'$ then the signature is legitimate except with negligible probability.
+\end{enumerate}
+
+
+
+\subsection*{The Drijvers attack}
+
+The naive Schnorr multisig scheme just described is vulnerable to the Drijvers attack. Suppose there are $j \in \{1,...,T\}$ concurrent signing attempts (for different messages $\mathfrak{m}_j$) by the same multisig group. For the sake of notation, suppose signer $e = N$ is dishonest and executes the Drijvers attack.
+
+\begin{enumerate}
+    \item \textbf{Round 1 (all)}: Each honest participant $e \in \{1,...,N-1\}$ does the following for each concurrent signature $j$.
+    \begin{enumerate}
+        \item picks random nonce $\alpha_{j,e} \in_R \mathbb{Z}_l$,
+        \item computes $\alpha_{j,e} G$ and sends it to the other participants securely.
+    \end{enumerate}
+
+    \item After collecting $\alpha_{j,e} G$ from all other participants, dishonest participant $e = N$ prepares for his attack with the following.
+    \begin{enumerate}
+        \item He picks a random nonce $\alpha' \in_R \mathbb{Z}_l$ and computes $\alpha' G$.
+        \item He creates $w \in \{1,...,W\}$ new messages $\mathfrak{m}_w$.
+        \item He creates $W$ new malicious challenges
+        \[ c^{fake}_w = \mathcal{H}_n(\mathfrak{m}_w,[\sum^{N-1}_{e=1} \sum^T_{j=1} \alpha_{e,j} G + \alpha' G]) \]
+    \end{enumerate}
+
+    \item Dishonest participant $e = N$ executes the Drijvers attack.
+    \begin{enumerate}
+        \item Create, but do not define, a set of EC points $A_j$ for $j \in \{1,...,T\}$.
+        \item Use an ROS solver (e.g. Wagner) to find a combination of points $A_j$ such that $\sum_j c_j$ equals one of the fake challenges $c^{fake}_w$, by iteratively re-defining different $A_j$ values in the following.
+        \[ c_j = \mathcal{H}_n(\mathfrak{m}_j,[\sum^{N-1}_{e=1} \alpha_{e,j} G + A_j]) \]
+        \item Once he finds a successful challenge $c^{fake}_{s}$, he sends all $A_j$ to the other participants.
+    \end{enumerate}
+
+    \item Each honest participant computes
+    \[ \alpha_j G = \sum^{N-1}_{e=1} \alpha_{j,e} G + A_j \]
+    
+    Note that honest participants won't be able to distinguish dishonest $A_j$ from honest values $\alpha_{j,e} G$. If the signature scheme requires signers to make a signature on $\alpha_{j,e} G$, then in the Drijvers attack the attacker would iteratively define $a_j$, compute $a_j G = A_j$ for the $c_j$ computation, then send $A_j$ to other participants (making the attack a bit less efficient, but still effective).
+
+    \item \textbf{Round 2 (all)}: Each honest participant $e \in \{1,...,N-1\}$ does the following for each concurrent signature $j$:
+    \begin{enumerate}
+        \item computes the challenge $c_j = \mathcal{H}_n(\mathfrak{m},[\alpha_j G])$,
+        \item defines their response component $r_{j,e} = \alpha_{j,e} - c_j*k^{pre}_e \pmod l$,
+        \item and sends $r_{j,e}$ to the other participants securely.
+    \end{enumerate}
+
+    \item After collecting $r_{j,e} G$ from all other participants, dishonest participant $e = N$ completes their forgery.
+    \begin{enumerate}
+        \item He computes his response $r' = \alpha' - c^{fake}_{s}*k^{pre}_N \pmod l$.
+        \item He computes the total forged response
+        \[ r^{fake} = \sum^{N-1}_{e=1} \sum^T_{j=1} r_{e,j} + r'\]
+    \end{enumerate}
+
+    \item The dishonest participant publishes their forgery $\sigma_{forged}(\mathfrak{m}_s) = (c^{fake}_s, r^{fake})$.
+\end{enumerate}
+
+\subsubsection*{Verification}
+
+Given $K^{grp}$, $\mathfrak{m_s}$, and $\sigma_{forged}(\mathfrak{m}_s) = (c^{fake}_s, r^{fake})$:
+\begin{enumerate}
+    \item Compute the challenge $c' = \mathcal{H}_n(\mathfrak{m_s},[r^{fake} G + c^{fake}_s*K^{grp}])$.
+
+    \item If $c^{fake}_s = c'$ then the signature is considered valid (even though it is a forgery!).
+\end{enumerate}
+
+\subsubsection*{Why it works}
+
+This works because
+\begin{align*}
+  	 c' &= c^{fake}_s \\
+  	 \mathcal{H}_n(\mathfrak{m}_j,[r^{fake} G + c^{fake}_s K^{grp}]) &=
+  	     \mathcal{H}_n(\mathfrak{m}_w,[\sum^{N-1}_{e=1} \sum^T_{j=1} \alpha_{e,j} G + \alpha' G]) \\
+  	  &= \mathcal{H}_n(\mathfrak{m}_w,[\sum^{N-1}_{e=1} \sum^T_{j=1} (r_{j,e} + c_j k^{pre}_e)*G + (r' + c^{fake}_{s} k^{pre}_N)*G]) \\
+  	  &= \mathcal{H}_n(\mathfrak{m}_w,[(\sum^{N-1}_{e=1} \sum^T_{j=1} r_{j,e} + c^{fake}_{s}*\sum^{N-1}_{e=1} k^{pre}_e)*G + (r' + c^{fake}_{s} k^{pre}_N)*G]) \\
+  	  &= \mathcal{H}_n(\mathfrak{m}_w,[(\sum^{N-1}_{e=1} \sum^T_{j=1} r_{j,e} + r')*G + c^{fake}_{s} K^{grp}]) \\
+  	  &= \mathcal{H}_n(\mathfrak{m}_w,[r^{fake} G + c^{fake}_{s} K^{grp}])
+\end{align*}
+
+\subsubsection*{Mitigating the Drijvers attack}
+
+The key to executing a Drijvers attack is being able to re-define $A_j$ values many times without affecting any $c^{fake}_w$ challenges. This way, with e.g.\ Wagner's method, it is possible to find a sum of challenges $\sum_j c_j$ that equals $c^{fake}_w$. If changing $A_j$ also changes $c^{fake}_w$, then Wagner's method becomes useless.
+
+
+\subsection*{Mitigation 1: commit-and-reveal}
+
+One way to prevent the flexibility of $A_j$ is to add a commit-and-reveal step to signing.
+
+\subsubsection*{Signature}
+
+Say there are N people who each have a public key in the set $\mathbb{K}^{pre}$, where each person $e \in \{1,...,N\}$ knows the private key $k^{pre}_e$. Their N-of-N group public key, which they will use to sign messages, is $K^{grp} = \sum_e k^{pre}_e G$. Suppose they want to jointly sign a message $\mathfrak{m}$. They could collaborate on a basic Schnorr-like signature like this:
+
+\begin{enumerate}
+    \item \textbf{Round 1}: Each participant $e \in \{1,...,N\}$ does the following.
+    \begin{enumerate}
+        \item picks random nonce $\alpha_e \in_R \mathbb{Z}_l$,
+        \item computes $\alpha_e G$
+        \item commits to it with $C^{\alpha}_e = \mathcal{H}_n(\alpha_e G)$,
+        \item and sends $C^{\alpha}_e$ to the other participants securely.
+    \end{enumerate}
+
+    \item \textbf{Round 2}: Once all commitments $C^{\alpha}_e$ have been collected, each participant sends their $\alpha_e G$ to the other participants securely. They must verify that $C^{\alpha}_e \stackrel{?}{=} \mathcal{H}_n(\alpha_e G)$ for all other participants.
+
+    \item Each participant computes 
+    \[ \alpha G = \sum_e \alpha_e G \]
+
+    \item \textbf{Round 3}: Each participant $e \in \{1,...,N\}$ does the following:
+    \begin{enumerate}
+        \item computes the challenge $c = \mathcal{H}_n(\mathfrak{m},[\alpha G])$,
+        \item defines their response component $r_e = \alpha_e - c*k^{pre}_e \pmod l$,
+        \item and sends $r_e$ to the other participants securely.
+    \end{enumerate}
+    \item Each participant computes 
+    \[ r = \sum_e r_e\]
+    \item Any participant can publish the signature $\sigma(\mathfrak{m}) = (c,r)$.
+\end{enumerate}
+
+Now, if an attacker tried to execute a Drijvers attack, they have a problem. They can't learn $\alpha_{j,e}$ until after sending $C^{\alpha}_{j,N} = \mathcal{H}_n(A_j)$ to other participants. To re-define $A_j$, they would need to restart signing from the beginning. However, that would entail new $\alpha_{j,e}$ values from all participants, which would also entail new $c^{fake}_w$ challenges. Therefore the Drijvers attack is mitigated.
+
+
+\subsection*{Mitigation 2: bi-nonce signing}
+
+Bi-nonce signing has a similar effect to the commit-and-reveal pattern, but requires only two rounds thanks to a neat trick with the random oracle model.
+
+\subsubsection*{Signature}
+
+Say there are N people who each have a public key in the set $\mathbb{K}^{pre}$, where each person $e \in \{1,...,N\}$ knows the private key $k^{pre}_e$. Their N-of-N group public key, which they will use to sign messages, is $K^{grp} = \sum_e k^{pre}_e G$. Suppose they want to jointly sign a message $\mathfrak{m}$. They could collaborate on a basic Schnorr-like signature like this:
+
+\begin{enumerate}
+    \item \textbf{Round 1}: Each participant $e \in \{1,...,N\}$ does the following.
+    \begin{enumerate}
+        \item picks random nonces $\alpha^a_e, \alpha^b_e \in_R \mathbb{Z}_l$,
+        \item computes $\alpha^a_e G, \alpha^b_e G$ and sends them to the other participants securely.
+    \end{enumerate}
+
+    \item Each participant
+    \begin{enumerate}
+        \item Computes nonce coefficients $n_e$ for $e \in \{1,...,N\}$\vspace{.115cm}
+        \[ n_e = \mathcal{H}_n(e, \mathfrak{m}, [\alpha^a_1 G], [\alpha^b_1 G], ..., [\alpha^a_N G], [\alpha^b_N G]) \]
+
+        \item Computes
+        \[ \alpha G = \sum_e [\alpha^a_e G + n_e*\alpha^b_e G] \]
+    \end{enumerate}
+
+    \item \textbf{Round 2}: Each participant $e \in \{1,...,N\}$ does the following.
+    \begin{enumerate}
+        \item computes the challenge $c = \mathcal{H}_n(\mathfrak{m},[\alpha G])$,
+        \item defines their response component $r_e = (\alpha^a_e + n_e \alpha^b_e) - c*k^{pre}_e \pmod l$,
+        \item and sends $r_e$ to the other participants securely.
+    \end{enumerate}
+
+    \item Each participant computes 
+    \[ r = \sum_e r_e\]
+    \item Any participant can publish the signature $\sigma(\mathfrak{m}) = (c, r)$.
+\end{enumerate}
+
+In this case, if a Drijvers attacker redefines $A^a_j$ or $A^b_j$, then all the nonces $n_{j,e}$ will change, thereby changing the $c^{fake}_w$ challenges. Therefore the Drijvers attack is mitigated.
+
+\subsubsection*{Why two nonces?}
+
+It may seems like setting $\alpha^a_e = 0$ would be acceptable, only transmitting $\alpha^b_e G$ to other signers. However, doing so would allow the Drijvers attacker to `cancel' out the nonce coefficients of honest signers.
+
+Suppose there are $j \in \{1,...,T\}$ concurrent signing attempts (for different messages $\mathfrak{m}_j$) by the same multisig group. For the sake of notation, suppose signer $e = N$ is dishonest and executes the Drijvers attack. Also suppose $N = 2$ (or, equivalently, assume the dishonest participant controls $N - 1$ of the key shares). It isn't clear to me if the problem I demonstrate below is also a problem if the dishonest signer controls only $N - 2$ key shares, but since honest signers must assume $N - 1$ co-signers are malicious, this problem is sufficient to debunk the $\alpha^a_e = 0$ simplification.
+
+I don't show computations of nonce coefficients $n_e$, which are straightforward.
+
+\begin{enumerate}
+    \item \textbf{Round 1 (all)}: The honest participant does the following for each concurrent signature $j$.
+    \begin{enumerate}
+        \item picks random nonces $\alpha^b_{j,1} \in_R \mathbb{Z}_l$,
+        \item computes $\alpha^b_{j,1} G$ and sends them to the dishonest participant.
+    \end{enumerate}
+
+    \item After collecting $\alpha^b_{j,1} G$, the dishonest participant prepares for his attack with the following.
+    \begin{enumerate}
+        \item He picks a random nonce $\alpha' \in_R \mathbb{Z}_l$ and computes $\alpha' G$.
+        \item He creates $w \in \{1,...,W\}$ new messages $\mathfrak{m}_w$.
+        \item He creates $W$ new malicious challenges
+        \[ c^{fake}_w = \mathcal{H}_n(\mathfrak{m}_w,[\alpha^b_{j,1} G + \alpha' G]) \]
+    \end{enumerate}
+
+    \item The dishonest participant executes the Drijvers attack.
+    \begin{enumerate}
+        \item Create, but do not define, a set of EC points $A_j$ for $j \in \{1,...,T\}$.
+        \item Use an ROS solver (e.g. Wagner) to find a combination of points $A_j$ such that $\sum_j (1/n_{j,1})*c_j$ equals one of the fake challenges $c^{fake}_w$, by iteratively re-defining different $A_j$ values in the following.
+        \[ c_j = \mathcal{H}_n(\mathfrak{m}_j,[n_{j,1}*\alpha^b_{j,1} G + n_{j,2}*A_j]) \]
+        \item Once he finds a successful challenge $c^{fake}_{s}$, he sends all $A_j$ to the honest participant.
+    \end{enumerate}
+
+    \item The honest participant computes
+    \[ \alpha_j G = n_{j,1}*\alpha_{j,1} G + n_{j,2}*A_j \]
+
+    \item \textbf{Round 2 (all)}: The honest participant does the following for each concurrent signature $j$:
+    \begin{enumerate}
+        \item computes the challenge $c_j = \mathcal{H}_n(\mathfrak{m},[\alpha_j G])$,
+        \item defines their response component $r_{j,1} = n_{j,1}*\alpha_{j,1} - c_j*k^{pre}_1 \pmod l$,
+        \item and sends $r_{j,1}$ to the dishonest participant securely.
+    \end{enumerate}
+
+    \item After collecting $r_{j,1} G$ from the honest participant, the dishonest participant completes their forgery.
+    \begin{enumerate}
+        \item He computes his response $r' = \alpha' - c^{fake}_{s}*k^{pre}_N \pmod l$.
+        \item He computes the total forged response
+        \[ r^{fake} = (1/n_{j,1})*r_{j,1} + r' \]
+    \end{enumerate}
+
+    \item The dishonest participant publishes their forgery $\sigma_{forged}(\mathfrak{m}_s) = (c^{fake}_s, r^{fake})$.
+\end{enumerate}
+
+This works because
+\begin{align*}
+  	 c' &= c^{fake}_s \\
+  	 \mathcal{H}_n(\mathfrak{m}_j,[r^{fake} G + c^{fake}_s K^{grp}]) &=
+  	     \mathcal{H}_n(\mathfrak{m}_w,[\sum^T_{j=1} \alpha^b_{j,1} G + \alpha' G]) \\
+  	 \mathcal{H}_n(\mathfrak{m}_j,[(\sum^T_{j=1} (1/n_{j,1})*r_{j,1} + r') G + c^{fake}_s K^{grp}]) &=
+  	     \mathcal{H}_n(\mathfrak{m}_w,[\sum^T_{j=1} \alpha^b_{j,1} G + \alpha' G]) \\
+  	 \mathcal{H}_n(\mathfrak{m}_j,[(\sum^T_{j=1} (1/n_{j,1})*(n_{j,1}*\alpha^b_{j,1} - c_j*k^{pre}_1) + \alpha' - c^{fake}_{s}*k^{pre}_N) G + c^{fake}_s K^{grp}]) &=
+  	     \mathcal{H}_n(\mathfrak{m}_w,[\sum^T_{j=1} \alpha^b_{j,1} G + \alpha' G]) \\
+  	 \mathcal{H}_n(\mathfrak{m}_j,[(\sum^T_{j=1} (\alpha^b_{j,1} - (1/n_{j,1})*c_j*k^{pre}_1) + \alpha' - c^{fake}_{s}*k^{pre}_N) G + c^{fake}_s K^{grp}]) &=
+  	     \mathcal{H}_n(\mathfrak{m}_w,[\sum^T_{j=1} \alpha^b_{j,1} G + \alpha' G]) \\
+  	 \mathcal{H}_n(\mathfrak{m}_j,[(\sum^T_{j=1} \alpha^b_{j,1} + \alpha' - (\sum^T_{j=1} (1/n_{j,1})*c_j*k^{pre}_1 + c^{fake}_{s}*k^{pre}_N)) G + c^{fake}_s K^{grp}]) &=
+  	     \mathcal{H}_n(\mathfrak{m}_w,[\sum^T_{j=1} \alpha^b_{j,1} G + \alpha' G]) \\
+  	 \mathcal{H}_n(\mathfrak{m}_j,[(\sum^T_{j=1} \alpha^b_{j,1} + \alpha' - (c^{fake}_{s}*k^{pre}_1 + c^{fake}_{s}*k^{pre}_N)) G + c^{fake}_s K^{grp}]) &=
+  	     \mathcal{H}_n(\mathfrak{m}_w,[\sum^T_{j=1} \alpha^b_{j,1} G + \alpha' G]) \\
+  	 \mathcal{H}_n(\mathfrak{m}_w,[\sum^T_{j=1} \alpha^b_{j,1} G + \alpha' G]) &=
+  	     \mathcal{H}_n(\mathfrak{m}_w,[\sum^T_{j=1} \alpha^b_{j,1} G + \alpha' G])
+\end{align*}
+
+With two nonces, $r^{fake} = (1/n_{j,1})*r_{j,1} + r' = (1/n_{j,1})*\alpha^a_{j,1} + \alpha^b_{j,1} - (1/n_{j,1})*c_j*k^{pre}_1 + r'$. Since the nonce coefficient is still prefixed on $\alpha^a_{j,1}$, it is implicitly present in $c^{fake}_w$, hence $c^{fake}_w$ is dependent on $A_j$ ($A^a_j$ and $A^b_j$ in the case of two nonces), so the Drijvers attack is mitigated.
